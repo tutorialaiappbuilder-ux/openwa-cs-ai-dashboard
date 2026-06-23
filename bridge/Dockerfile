@@ -25,6 +25,9 @@ RUN mkdir -p /app/session
 # OpenWA perlu variabel ini agar Chrome berjalan di dalam container
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
+# Pastikan Chrome berjalan tanpa sandbox (wajib di Linux container)
+ENV CHROMIUM_FLAGS="--no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu"
+ENV CHROME_PATH=/usr/bin/google-chrome-stable
 
 # Port yang diexpose untuk endpoint /send dan /status
 EXPOSE 8080

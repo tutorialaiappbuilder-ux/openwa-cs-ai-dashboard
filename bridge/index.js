@@ -117,17 +117,9 @@ async function startWhatsApp() {
     headless: true,
     logConsole: false,
     qrTimeout: 0,
-    // Args Chrome untuk Docker/container (no-sandbox wajib di Linux container)
-    chromiumArgs: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu',
-    ],
+    // Gunakan Chrome yang sudah terinstall di Docker image (ghcr.io/puppeteer/puppeteer)
+    // JANGAN set chromiumArgs saat multiDevice: true — konflik dan menyebabkan timeout!
+    useChrome: true,
     // Callback saat QR code tersedia
     qrCallback: (qr) => {
       lastQrCode = qr

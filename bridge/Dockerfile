@@ -1,35 +1,32 @@
 # ============================================
-# Dockerfile untuk OpenWA Bridge
-# Deploy ke Render.com (Free Tier)
+# Dockerfile — Baileys WhatsApp Bridge v2.0
+# TANPA Puppeteer/Chrome — jauh lebih ringan!
 # ============================================
 
-# Base image dengan Node.js + Chromium bawaan
-FROM ghcr.io/puppeteer/puppeteer:22.10.0
+# Node.js slim — tidak perlu base image Puppeteer lagi
+FROM node:20-slim
+
+# Install dependencies minimal yang dibutuhkan Baileys
+RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Salin package.json terlebih dahulu (layer caching)
+# Copy package.json dan install dependencies
 COPY package.json ./
-
-# Install dependencies sebagai root (Render free tier perlu ini)
-USER root
 RUN npm install --omit=dev
 
-# Salin semua source code bridge
+# Copy semua source code
 COPY . .
 
-# Buat folder untuk menyimpan sesi WhatsApp
+# Buat folder session untuk menyimpan auth Baileys
 RUN mkdir -p /app/session
 
-# OpenWA perlu variabel ini agar Chrome berjalan di dalam container
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
-# Pastikan Chrome berjalan tanpa sandbox (wajib di Linux container)
-ENV CHROMIUM_FLAGS="--no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu"
-ENV CHROME_PATH=/usr/bin/google-chrome-stable
-
-# Port yang diexpose untuk endpoint /send dan /status
+# Port bridge
 EXPOSE 8080
 
 # Jalankan bridge

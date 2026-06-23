@@ -1,94 +1,129 @@
 /**
- * OpenWA WhatsApp Bridge — UPDATED for containerized/cloud deployment
+ * WhatsApp Bridge — Baileys Edition v2.0
  *
- * Perubahan dari versi lokal:
- * - Chromium args disesuaikan untuk Docker/container (no-sandbox, dll)
- * - QR Code dicetak sebagai teks ASCII agar bisa dibaca di logs Render
- * - Session disimpan secara lokal (persistent disk Render)
- * - Endpoint /qr untuk melihat QR code terbaru via HTTP
+ * Menggunakan @whiskeysockets/baileys (WebSocket langsung ke WhatsApp)
+ * TANPA Puppeteer/Chrome — jauh lebih ringan dan stabil di cloud.
+ *
+ * Endpoints:
+ *   GET  /status  — cek status koneksi
+ *   GET  /qr      — tampilkan QR code untuk scan
+ *   POST /send    — kirim pesan (dari admin takeover di dashboard)
  */
 
 import 'dotenv/config'
-import { create, decryptMedia } from '@open-wa/wa-automate'
-import axios from 'axios'
 import express from 'express'
 import qrcode from 'qrcode'
-import qrcodeTerminal from 'qrcode-terminal'
+import axios from 'axios'
+import pino from 'pino'
+import { createRequire } from 'module'
 
+// Baileys menggunakan CommonJS, kita perlu import via createRequire
+const require = createRequire(import.meta.url)
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeInMemoryStore,
+  jidNormalizedUser,
+} = require('@whiskeysockets/baileys')
+
+// ============================================
+// Config
+// ============================================
 const BACKEND_URL = process.env.BACKEND_API_URL || 'http://localhost:4000'
 const PORT = process.env.PORT || 8080
 const BUSINESS_ID = process.env.DEFAULT_BUSINESS_ID || ''
-
-let waClient = null
-let lastQrCode = null
-let lastQrPng = null
-let connectionStatus = 'disconnected'
+const SESSION_DIR = './session'
 
 // ============================================
-// Express App — harus start SEBELUM OpenWA
+// State
+// ============================================
+let sock = null
+let lastQrString = null
+let connectionStatus = 'disconnected' // disconnected | connecting | waiting_for_scan | connected | error
+
+// Logger minimal (tidak spam ke console)
+const logger = pino({ level: 'silent' })
+
+// ============================================
+// Express App
 // ============================================
 const app = express()
 app.use(express.json())
 
-/** GET /status — cek apakah bridge sudah terkoneksi */
+/** GET /status */
 app.get('/status', (req, res) => {
   res.json({
     status: connectionStatus,
     connected: connectionStatus === 'connected',
-    service: 'OpenWA Bridge',
+    service: 'Baileys WhatsApp Bridge v2.0',
     backend: BACKEND_URL,
     timestamp: new Date().toISOString(),
   })
 })
 
-/** GET /qr — tampilkan QR code dalam format PNG (untuk scan via browser) */
+/** GET /qr — tampilkan QR code sebagai HTML */
 app.get('/qr', async (req, res) => {
   if (connectionStatus === 'connected') {
-    return res.send('<h2 style="font-family:sans-serif;color:green">✅ WhatsApp sudah terkoneksi! Bridge aktif.</h2>')
-  }
-  if (!lastQrCode) {
     return res.send(`
-      <html><body style="font-family:sans-serif;padding:20px">
-        <h2>⏳ Menunggu QR Code...</h2>
-        <p>Refresh halaman ini dalam beberapa detik.</p>
+      <html><body style="font-family:sans-serif;padding:40px;text-align:center;background:#0f172a;color:#fff">
+        <div style="font-size:64px">✅</div>
+        <h2 style="color:#4ade80">WhatsApp Terhubung!</h2>
+        <p style="color:#94a3b8">Bridge aktif dan siap menerima pesan.</p>
+      </body></html>
+    `)
+  }
+
+  if (!lastQrString) {
+    return res.send(`
+      <html><head><title>WhatsApp QR</title></head>
+      <body style="font-family:sans-serif;padding:40px;text-align:center;background:#0f172a;color:#fff">
+        <div style="font-size:64px">⏳</div>
+        <h2>Menunggu QR Code...</h2>
+        <p style="color:#94a3b8">Bridge sedang menghubungkan ke WhatsApp.<br>Halaman ini akan otomatis refresh.</p>
         <script>setTimeout(()=>location.reload(), 3000)</script>
       </body></html>
     `)
   }
 
   try {
-    const qrDataUrl = await qrcode.toDataURL(lastQrCode, { width: 400 })
+    const qrDataUrl = await qrcode.toDataURL(lastQrString, { width: 400, margin: 2 })
     res.send(`
-      <html><head><title>OpenWA QR Code</title></head>
-      <body style="font-family:sans-serif;padding:20px;text-align:center;background:#0f172a;color:#fff">
-        <h2>📱 Scan QR Code dengan WhatsApp Anda</h2>
-        <img src="${qrDataUrl}" style="border:8px solid white;border-radius:12px;margin:20px auto;display:block" />
-        <p style="color:#94a3b8">Buka WhatsApp → Menu → Perangkat Tertaut → Tautkan Perangkat</p>
-        <p style="color:#64748b;font-size:12px">QR code akan diperbarui otomatis. <a href="/qr" style="color:#60a5fa">Refresh</a></p>
+      <html>
+      <head>
+        <title>Scan QR WhatsApp</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+      </head>
+      <body style="font-family:sans-serif;padding:20px;text-align:center;background:#0f172a;color:#fff;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center">
+        <div style="font-size:48px">📱</div>
+        <h2 style="margin:12px 0">Scan QR Code dengan WhatsApp</h2>
+        <img src="${qrDataUrl}" style="border:8px solid white;border-radius:16px;margin:16px auto;display:block;max-width:320px" />
+        <p style="color:#94a3b8;margin:8px 0">Buka WhatsApp → Titik Tiga → Perangkat Tertaut → Tautkan Perangkat</p>
+        <p style="color:#64748b;font-size:12px">QR code diperbarui tiap 20 detik. <a href="/qr" style="color:#60a5fa">Refresh manual</a></p>
         <script>setTimeout(()=>location.reload(), 20000)</script>
       </body></html>
     `)
   } catch (e) {
-    res.status(500).send('Gagal menghasilkan QR code: ' + e.message)
+    res.status(500).send('Gagal render QR: ' + e.message)
   }
 })
 
-/** POST /send — kirim pesan dari admin (via dashboard takeover) */
+/** POST /send — kirim pesan ke nomor tertentu */
 app.post('/send', async (req, res) => {
   const { to, message } = req.body
   if (!to || !message) {
     return res.status(400).json({ error: '"to" dan "message" wajib diisi.' })
   }
-  if (!waClient || connectionStatus !== 'connected') {
-    return res.status(503).json({ error: 'WhatsApp belum terkoneksi. Buka /qr untuk scan QR code.' })
+  if (!sock || connectionStatus !== 'connected') {
+    return res.status(503).json({ error: 'WhatsApp belum terkoneksi.' })
   }
   try {
-    await waClient.simulateTyping(to, true)
-    await new Promise((r) => setTimeout(r, 1500))
-    await waClient.simulateTyping(to, false)
-    await waClient.sendText(to, message)
-    console.log(`📤 Pesan terkirim ke ${to}`)
-    return res.json({ status: 'sent', to })
+    // Format nomor: pastikan berakhir dengan @s.whatsapp.net
+    const jid = to.includes('@') ? to : `${to.replace(/[^0-9]/g, '')}@s.whatsapp.net`
+    await sock.sendMessage(jid, { text: message })
+    console.log(`📤 Pesan terkirim ke ${jid}`)
+    return res.json({ status: 'sent', to: jid })
   } catch (err) {
     console.error('❌ Gagal kirim pesan:', err.message)
     return res.status(500).json({ error: err.message })
@@ -96,115 +131,147 @@ app.post('/send', async (req, res) => {
 })
 
 app.listen(PORT, () => {
-  console.log(`\n🌉 Bridge HTTP listening on port ${PORT}`)
+  console.log(`\n🌉 Baileys Bridge HTTP listening on port ${PORT}`)
   console.log(`🔗 Buka URL ini di browser untuk scan QR:\n   https://<your-render-url>/qr\n`)
 })
 
 // ============================================
-// OpenWA Client
+// Baileys WhatsApp Connection
 // ============================================
 async function startWhatsApp() {
-  console.log('📱 Memulai OpenWA WhatsApp Bridge...')
+  console.log('📱 Memulai Baileys WhatsApp Bridge...')
   console.log(`🌐 Backend API: ${BACKEND_URL}`)
   console.log(`🏢 Business ID: ${BUSINESS_ID || '(belum diset di env)'}`)
 
-  const client = await create({
-    sessionId: 'openwa-bridge',
-    multiDevice: true,
-    authTimeout: 120,
-    blockCrashLogs: true,
-    disableSpins: true,
-    headless: true,
-    logConsole: false,
-    qrTimeout: 0,
-    // Gunakan puppeteerOptions (BUKAN chromiumArgs) agar tidak konflik dengan multiDevice
-    // Flag wajib untuk Docker container dengan RAM terbatas (Render free: 512MB)
-    puppeteerOptions: {
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--no-zygote',
-        '--single-process',           // Penting! Render free tier RAM terbatas
-        '--disable-extensions',
-        '--disable-background-networking',
-        '--disable-default-apps',
-        '--mute-audio',
-        '--no-first-run',
-      ],
-    },
-    // Callback saat QR code tersedia
-    qrCallback: (qr) => {
-      lastQrCode = qr
-      connectionStatus = 'waiting_for_scan'
-      console.log('\n📲 QR Code siap! Buka URL /qr di browser untuk scan.')
-      // Juga print di terminal sebagai fallback
-      qrcodeTerminal.generate(qr, { small: true })
-    },
+  connectionStatus = 'connecting'
+
+  // Load atau buat session baru
+  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
+
+  // Cek versi Baileys terbaru
+  const { version } = await fetchLatestBaileysVersion()
+  console.log(`📦 Baileys version: ${version.join('.')}`)
+
+  sock = makeWASocket({
+    version,
+    logger,
+    auth: state,
+    printQRInTerminal: true, // Juga print ke log terminal sebagai fallback
+    browser: ['Baileys Bridge', 'Chrome', '125.0'],
+    connectTimeoutMs: 60000,
+    keepAliveIntervalMs: 15000,
+    defaultQueryTimeoutMs: 60000,
+    retryRequestDelayMs: 1000,
+    maxRetries: 5,
   })
 
-  waClient = client
-  connectionStatus = 'connected'
-  lastQrCode = null
-  console.log('✅ WhatsApp berhasil terkoneksi!')
+  // Simpan credentials setiap kali ada update
+  sock.ev.on('creds.update', saveCreds)
 
-  // Listen pesan masuk
-  client.onMessage(async (message) => {
-    if (message.fromMe || message.isGroupMsg) return
+  // Handle koneksi
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update
 
-    console.log(`📩 Dari ${message.sender.pushname || message.from}: "${message.body?.substring(0, 50)}"`)
+    // QR code tersedia → tampilkan
+    if (qr) {
+      lastQrString = qr
+      connectionStatus = 'waiting_for_scan'
+      console.log('\n📲 QR Code siap! Buka URL /qr di browser untuk scan.')
+    }
 
-    try {
-      await client.simulateTyping(message.chatId, true)
+    if (connection === 'close') {
+      const shouldReconnect =
+        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
 
-      const payload = {
-        from: message.from,
-        message: message.body || '',
-        senderName: message.sender.pushname || message.sender.formattedName || '',
-        businessId: BUSINESS_ID,
+      console.log(`🔌 Koneksi terputus. Reconnect: ${shouldReconnect}`)
+      connectionStatus = 'disconnected'
+      lastQrString = null
+      sock = null
+
+      if (shouldReconnect) {
+        console.log('♻️ Mencoba reconnect dalam 5 detik...')
+        setTimeout(() => startWhatsApp(), 5000)
+      } else {
+        console.log('🚪 Logged out dari WhatsApp. Hapus folder session untuk login ulang.')
+        connectionStatus = 'logged_out'
       }
+    }
 
-      if (message.mimetype) {
-        payload.message += `\n\n[${message.type}: ${message.mimetype}]`
-      }
-
-      const response = await axios.post(`${BACKEND_URL}/api/webhook/message`, payload, {
-        timeout: 30000,
-      })
-
-      await client.simulateTyping(message.chatId, false)
-
-      if (response.data.autoReply && response.data.reply) {
-        const delay = Math.min(response.data.reply.length * 30, 3000)
-        await new Promise((r) => setTimeout(r, delay))
-        await client.simulateTyping(message.chatId, true)
-        await new Promise((r) => setTimeout(r, 800))
-        await client.simulateTyping(message.chatId, false)
-        await client.sendText(message.from, response.data.reply)
-        console.log(`🤖 AI reply terkirim ke ${message.from}`)
-      }
-    } catch (err) {
-      console.error('❌ Error proses pesan:', err.message)
-      try { await client.simulateTyping(message.chatId, false) } catch (_) {}
+    if (connection === 'open') {
+      connectionStatus = 'connected'
+      lastQrString = null
+      console.log('✅ WhatsApp berhasil terkoneksi!')
+      console.log(`📱 Nomor: ${sock.user?.id}`)
     }
   })
 
-  client.onStateChanged((state) => {
-    console.log(`📊 State: ${state}`)
-    if (state === 'CONFLICT' || state === 'UNLAUNCHED') {
-      connectionStatus = 'disconnected'
-      client.forceRefocus()
+  // Handle pesan masuk
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    if (type !== 'notify') return
+
+    for (const msg of messages) {
+      // Skip pesan dari diri sendiri dan grup
+      if (msg.key.fromMe) continue
+      if (msg.key.remoteJid?.endsWith('@g.us')) continue
+      if (!msg.message) continue
+
+      const from = msg.key.remoteJid
+      const senderName =
+        msg.pushName ||
+        msg.key.participant?.split('@')[0] ||
+        from?.split('@')[0] ||
+        'Unknown'
+
+      // Ekstrak teks pesan
+      const msgContent = msg.message
+      const text =
+        msgContent.conversation ||
+        msgContent.extendedTextMessage?.text ||
+        msgContent.imageMessage?.caption ||
+        msgContent.videoMessage?.caption ||
+        ''
+
+      if (!text) continue
+
+      console.log(`📩 Dari ${senderName} (${from}): "${text.substring(0, 60)}"`)
+
+      try {
+        // Kirim ke backend untuk diproses AI
+        const payload = {
+          from,
+          message: text,
+          senderName,
+          businessId: BUSINESS_ID,
+        }
+
+        const response = await axios.post(`${BACKEND_URL}/api/webhook/message`, payload, {
+          timeout: 30000,
+        })
+
+        // Jika ada auto-reply dari AI, kirim balik
+        if (response.data.autoReply && response.data.reply) {
+          const replyText = response.data.reply
+
+          // Simulasi typing delay agar terasa natural
+          const typingDelay = Math.min(replyText.length * 25, 3000)
+          await new Promise((r) => setTimeout(r, typingDelay))
+
+          await sock.sendMessage(from, { text: replyText })
+          console.log(`🤖 AI reply terkirim ke ${from}`)
+        }
+      } catch (err) {
+        console.error('❌ Error proses pesan:', err.message)
+      }
     }
   })
 
   console.log('👂 Mendengarkan pesan masuk...\n')
 }
 
+// Start
 startWhatsApp().catch((err) => {
-  console.error('💥 Bridge gagal start:', err)
+  console.error('💥 Bridge gagal start:', err.message)
   connectionStatus = 'error'
-  // Jangan exit — biarkan Express tetap berjalan agar /qr dan /status masih bisa diakses
-  setTimeout(() => startWhatsApp(), 30000) // Retry setelah 30 detik
+  // Retry setelah 15 detik
+  setTimeout(() => startWhatsApp(), 15000)
 })

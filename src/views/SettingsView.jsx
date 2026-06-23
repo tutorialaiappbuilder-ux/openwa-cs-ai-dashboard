@@ -5,6 +5,11 @@ export default function SettingsView({ systemInstruction, setSystemInstruction, 
   const [instructionInput, setInstructionInput] = useState(systemInstruction)
   const [savedSuccess, setSavedSuccess] = useState(false)
 
+  // Sync instructionInput when systemInstruction changes from API
+  useEffect(() => {
+    setInstructionInput(systemInstruction)
+  }, [systemInstruction])
+
   // Playground state
   const [sandboxMessages, setSandboxMessages] = useState([
     { id: '1', role: 'assistant', content: 'Halo! Ini adalah Playground. Ketik apa saja untuk menguji gaya bicara AI dengan System Instruction di sebelah kiri.' }
@@ -40,11 +45,13 @@ export default function SettingsView({ systemInstruction, setSystemInstruction, 
     setInstructionInput(presetContent)
   }
 
-  const handleSave = (e) => {
+  const handleSave = async (e) => {
     e.preventDefault()
-    setSystemInstruction(instructionInput)
-    setSavedSuccess(true)
-    setTimeout(() => setSavedSuccess(false), 2000)
+    const success = await setSystemInstruction(instructionInput)
+    if (success) {
+      setSavedSuccess(true)
+      setTimeout(() => setSavedSuccess(false), 2000)
+    }
   }
 
   // Generate simulated AI reply for the playground

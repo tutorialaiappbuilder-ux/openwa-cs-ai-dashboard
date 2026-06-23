@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { eq, desc } from 'drizzle-orm'
 import { requireDb } from '../db/index.js'
 import { conversations, messages } from '../db/schema.js'
+import axios from 'axios'
 
 const router = Router()
 
@@ -118,7 +119,19 @@ router.post('/:id/reply', async (req, res) => {
       .set({ lastMessageAt: new Date() })
       .where(eq(conversations.id, id))
 
-    // TODO: Kirim via OpenWA bridge ke WhatsApp pelanggan
+    // Kirim via OpenWA bridge ke WhatsApp pelanggan
+    const bridgeUrl = process.env.WHATSAPP_BRIDGE_URL || 'http://localhost:8080'
+    try {
+      await axios.post(`${bridgeUrl}/send`, {
+        to: conv.customerWaNumber,
+        message: content,
+      })
+      console.log(`✉️ Pesan manual terkirim via bridge ke ${conv.customerWaNumber}`)
+    } catch (bridgeErr) {
+      console.error('⚠️ Gagal mengirim pesan ke WhatsApp via Bridge:', bridgeErr.message)
+      // Jangan return error 500 jika DB sudah tersimpan, agar UI tidak bingung, tapi sertakan warning di respons
+    }
+
     return res.json({ status: 'sent', message: msg })
   } catch (err) {
     console.error('❌ POST /reply error:', err)

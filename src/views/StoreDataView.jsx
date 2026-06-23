@@ -1,7 +1,8 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Plus, Edit2, Trash2, Clock, Calendar, Percent, Store, Save, X, DollarSign } from 'lucide-react'
+import { apiFetch } from '../utils/api'
 
-export default function StoreDataView({ storeData, setStoreData }) {
+export default function StoreDataView({ storeData, setStoreData, onRefresh }) {
   const [activeTab, setActiveTab] = useState('menu') // menu | hours | promos
 
   // Menu Modal form state
@@ -16,10 +17,18 @@ export default function StoreDataView({ storeData, setStoreData }) {
 
   // Operational Hours state
   const [hoursForm, setHoursForm] = useState({
-    weekday: storeData.hours.weekday,
-    weekend: storeData.hours.weekend
+    weekday: storeData?.hours?.weekday || '',
+    weekend: storeData?.hours?.weekend || ''
   })
   const [hoursSaved, setHoursSaved] = useState(false)
+
+  // Sync hoursForm when storeData.hours loads/updates from API
+  useEffect(() => {
+    setHoursForm({
+      weekday: storeData?.hours?.weekday || '',
+      weekend: storeData?.hours?.weekend || ''
+    })
+  }, [storeData?.hours])
 
   // MENU ACTIONS
   const handleOpenMenuModal = (item = null) => {
@@ -33,36 +42,61 @@ export default function StoreDataView({ storeData, setStoreData }) {
     setIsMenuModalOpen(true)
   }
 
-  const handleSaveMenu = (e) => {
+  const handleSaveMenu = async (e) => {
     e.preventDefault()
     if (!menuForm.name || !menuForm.price) return
 
     const priceNum = parseFloat(menuForm.price)
     if (isNaN(priceNum)) return
 
-    if (editingMenuItem) {
-      // Edit
-      const updatedMenu = storeData.menu.map(m => 
-        m.id === editingMenuItem.id ? { ...m, name: menuForm.name, price: priceNum, category: menuForm.category } : m
-      )
-      setStoreData({ ...storeData, menu: updatedMenu })
-    } else {
-      // Add new
-      const newItem = {
-        id: Date.now().toString(),
-        name: menuForm.name,
-        price: priceNum,
-        category: menuForm.category
+    try {
+      if (editingMenuItem) {
+        // Edit
+        await apiFetch(`/api/store-data/${editingMenuItem.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            content: {
+              name: menuForm.name,
+              price: priceNum,
+              category: menuForm.category
+            }
+          })
+        })
+      } else {
+        // Add new
+        await apiFetch('/api/store-data', {
+          method: 'POST',
+          body: JSON.stringify({
+            category: 'menu',
+            content: {
+              name: menuForm.name,
+              price: priceNum,
+              category: menuForm.category
+            }
+          })
+        })
       }
-      setStoreData({ ...storeData, menu: [...storeData.menu, newItem] })
+      setIsMenuModalOpen(false)
+      if (typeof onRefresh === 'function') {
+        onRefresh()
+      }
+    } catch (err) {
+      console.error('Failed to save menu item:', err)
+      alert('Gagal menyimpan menu: ' + err.message)
     }
-    setIsMenuModalOpen(false)
   }
 
-  const handleDeleteMenu = (id) => {
+  const handleDeleteMenu = async (id) => {
     if (confirm("Hapus menu ini?")) {
-      const updatedMenu = storeData.menu.filter(m => m.id !== id)
-      setStoreData({ ...storeData, menu: updatedMenu })
+      try {
+        await apiFetch(`/api/store-data/${id}`, { method: 'DELETE' })
+        if (typeof onRefresh === 'function') {
+          onRefresh()
+        }
+      } catch (err) {
+        console.error('Failed to delete menu item:', err)
+        alert('Gagal menghapus menu: ' + err.message)
+      }
     }
   }
 
@@ -78,47 +112,94 @@ export default function StoreDataView({ storeData, setStoreData }) {
     setIsPromoModalOpen(true)
   }
 
-  const handleSavePromo = (e) => {
+  const handleSavePromo = async (e) => {
     e.preventDefault()
     if (!promoForm.code || !promoForm.desc) return
 
     const cleanCode = promoForm.code.toUpperCase().replace(/\s+/g, '')
 
-    if (editingPromo) {
-      const updatedPromos = storeData.promos.map(p => 
-        p.id === editingPromo.id ? { ...p, code: cleanCode, desc: promoForm.desc } : p
-      )
-      setStoreData({ ...storeData, promos: updatedPromos })
-    } else {
-      const newPromo = {
-        id: Date.now().toString(),
-        code: cleanCode,
-        desc: promoForm.desc
+    try {
+      if (editingPromo) {
+        await apiFetch(`/api/store-data/${editingPromo.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            content: {
+              code: cleanCode,
+              desc: promoForm.desc
+            }
+          })
+        })
+      } else {
+        await apiFetch('/api/store-data', {
+          method: 'POST',
+          body: JSON.stringify({
+            category: 'promo',
+            content: {
+              code: cleanCode,
+              desc: promoForm.desc
+            }
+          })
+        })
       }
-      setStoreData({ ...storeData, promos: [...storeData.promos, newPromo] })
+      setIsPromoModalOpen(false)
+      if (typeof onRefresh === 'function') {
+        onRefresh()
+      }
+    } catch (err) {
+      console.error('Failed to save promo:', err)
+      alert('Gagal menyimpan promo: ' + err.message)
     }
-    setIsPromoModalOpen(false)
   }
 
-  const handleDeletePromo = (id) => {
+  const handleDeletePromo = async (id) => {
     if (confirm("Hapus promo ini?")) {
-      const updatedPromos = storeData.promos.filter(p => p.id !== id)
-      setStoreData({ ...storeData, promos: updatedPromos })
+      try {
+        await apiFetch(`/api/store-data/${id}`, { method: 'DELETE' })
+        if (typeof onRefresh === 'function') {
+          onRefresh()
+        }
+      } catch (err) {
+        console.error('Failed to delete promo:', err)
+        alert('Gagal menghapus promo: ' + err.message)
+      }
     }
   }
 
   // HOURS ACTIONS
-  const handleSaveHours = (e) => {
+  const handleSaveHours = async (e) => {
     e.preventDefault()
-    setStoreData({
-      ...storeData,
-      hours: {
-        weekday: hoursForm.weekday,
-        weekend: hoursForm.weekend
+    try {
+      if (storeData?.hours?.id) {
+        await apiFetch(`/api/store-data/${storeData.hours.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            content: {
+              weekday: hoursForm.weekday,
+              weekend: hoursForm.weekend
+            }
+          })
+        })
+      } else {
+        await apiFetch('/api/store-data', {
+          method: 'POST',
+          body: JSON.stringify({
+            category: 'jam_operasional',
+            content: {
+              weekday: hoursForm.weekday,
+              weekend: hoursForm.weekend
+            }
+          })
+        })
       }
-    })
-    setHoursSaved(true)
-    setTimeout(() => setHoursSaved(false), 2000)
+      setHoursSaved(true)
+      setTimeout(() => setHoursSaved(false), 2000)
+      if (typeof onRefresh === 'function') {
+        onRefresh()
+      }
+    } catch (err) {
+      console.error('Failed to save hours:', err)
+      alert('Gagal menyimpan jam operasional: ' + err.message)
+    }
   }
 
   return (

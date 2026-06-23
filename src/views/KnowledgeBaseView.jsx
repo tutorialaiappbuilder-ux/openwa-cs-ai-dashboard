@@ -1,7 +1,8 @@
 import React, { useState } from 'react'
 import { FileText, UploadCloud, Eye, Trash2, CheckCircle2, Clock, AlertTriangle, X, Database } from 'lucide-react'
+import { apiFetch } from '../utils/api'
 
-export default function KnowledgeBaseView({ knowledgeBase, setKnowledgeBase }) {
+export default function KnowledgeBaseView({ knowledgeBase, setKnowledgeBase, onRefresh }) {
   const [dragActive, setDragActive] = useState(false)
   const [selectedFile, setSelectedFile] = useState(null)
   const [previewContent, setPreviewContent] = useState('')
@@ -25,50 +26,82 @@ export default function KnowledgeBaseView({ knowledgeBase, setKnowledgeBase }) {
     setDragActive(false)
     
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      uploadFileMock(e.dataTransfer.files[0])
+      handleUploadFile(e.dataTransfer.files[0])
     }
   }
 
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
-      uploadFileMock(e.target.files[0])
+      handleUploadFile(e.target.files[0])
     }
   }
 
-  // Mocking file upload + extraction to Cloudflare R2 & Neon
-  const uploadFileMock = (file) => {
+  // Real file upload + text extraction from backend
+  const handleUploadFile = async (file) => {
     const ext = file.name.split('.').pop().toLowerCase()
     if (!['pdf', 'docx', 'txt'].includes(ext)) {
       alert("Format berkas tidak didukung! Hanya PDF, DOCX, dan TXT.")
       return
     }
 
-    const newId = Date.now().toString()
-    const newFile = {
-      id: newId,
+    const tempId = Date.now().toString()
+    const tempFile = {
+      id: tempId,
       file_name: file.name,
       file_type: ext,
       file_size: `${(file.size / 1024).toFixed(1)} KB`,
-      status: 'uploading', // uploading -> processing -> ready
-      content_text: `[HASIL EKSTRAKSI TEKS DARI DOKUMEN: ${file.name}]\n\nDokumen ini berisi informasi referensi penting untuk bisnis Anda yang diunggah pada ${new Date().toLocaleDateString('id-ID')}.\n\nAI Gemini akan memanfaatkan baris teks ini sebagai acuan dalam membalas chat secara otomatis di WhatsApp.`,
+      status: 'uploading',
+      content_text: '',
       created_at: new Date().toISOString()
     }
 
-    setKnowledgeBase(prev => [newFile, ...prev])
+    setKnowledgeBase(prev => [tempFile, ...prev])
 
-    // Ingestion simulation stages
-    setTimeout(() => {
-      setKnowledgeBase(current => current.map(f => f.id === newId ? { ...f, status: 'processing' } : f))
-    }, 1500)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
 
-    setTimeout(() => {
-      setKnowledgeBase(current => current.map(f => f.id === newId ? { ...f, status: 'ready' } : f))
-    }, 3500)
+      // Ganti status ke processing sesaat sebelum panggil API
+      setKnowledgeBase(current => current.map(f => f.id === tempId ? { ...f, status: 'processing' } : f))
+
+      const uploadedDoc = await apiFetch('/api/knowledge-base/upload', {
+        method: 'POST',
+        body: formData
+      })
+
+      // Ganti temp data dengan data dari backend
+      setKnowledgeBase(current => current.map(f => f.id === tempId ? {
+        id: uploadedDoc.id,
+        file_name: uploadedDoc.fileName,
+        file_type: uploadedDoc.fileType,
+        file_size: uploadedDoc.contentText ? `${(uploadedDoc.contentText.length / 1024).toFixed(1)} KB` : 'N/A',
+        status: 'ready',
+        content_text: uploadedDoc.contentText,
+        created_at: uploadedDoc.createdAt
+      } : f))
+
+      if (typeof onRefresh === 'function') {
+        onRefresh()
+      }
+    } catch (err) {
+      console.error('File upload failed:', err)
+      alert('Gagal mengunggah file: ' + err.message)
+      // Hapus file temp jika gagal
+      setKnowledgeBase(current => current.filter(f => f.id !== tempId))
+    }
   }
 
-  const deleteFile = (id) => {
+  const deleteFile = async (id) => {
     if (confirm("Apakah Anda yakin ingin menghapus dokumen referensi ini?")) {
-      setKnowledgeBase(prev => prev.filter(f => f.id !== id))
+      try {
+        await apiFetch(`/api/knowledge-base/${id}`, { method: 'DELETE' })
+        if (typeof onRefresh === 'function') {
+          onRefresh()
+        }
+      } catch (err) {
+        console.error('Failed to delete file:', err)
+        alert('Gagal menghapus file: ' + err.message)
+      }
     }
   }
 

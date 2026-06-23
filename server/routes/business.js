@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { eq } from 'drizzle-orm'
 import { requireDb } from '../db/index.js'
 import { businesses } from '../db/schema.js'
+import axios from 'axios'
 
 const router = Router()
 
@@ -87,6 +88,20 @@ router.put('/toggle-bot', async (req, res) => {
   } catch (err) {
     console.error('❌ PUT /toggle-bot error:', err)
     return res.status(500).json({ error: err.message })
+  }
+})
+
+/**
+ * GET /api/business/gateway-status
+ * Ambil status koneksi WhatsApp dari OpenWA Bridge
+ */
+router.get('/gateway-status', async (req, res) => {
+  try {
+    const bridgeUrl = process.env.WHATSAPP_BRIDGE_URL || 'http://localhost:8080'
+    const response = await axios.get(`${bridgeUrl}/status`, { timeout: 2000 })
+    return res.json(response.data)
+  } catch (err) {
+    return res.json({ status: 'offline', connected: false, error: err.message })
   }
 })
 

@@ -30,23 +30,36 @@ export default function Sidebar({ activeTab, setActiveTab, botActive, setBotActi
         <div className="mt-6 p-3 rounded-xl bg-brand-dark/50 border border-brand-border/60 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className={`w-2.5 h-2.5 rounded-full status-pulse-dot ${
-              gatewayStatus === 'online' ? 'bg-whatsapp-green shadow-[0_0_8px_#25D366]' : 'bg-red-500 shadow-[0_0_8px_#ef4444]'
+              gatewayStatus === 'connected' || gatewayStatus === 'online'
+                ? 'bg-whatsapp-green shadow-[0_0_8px_#25D366]' 
+                : gatewayStatus === 'waiting_for_scan'
+                ? 'bg-amber-500 shadow-[0_0_8px_#f59e0b]'
+                : 'bg-red-500 shadow-[0_0_8px_#ef4444]'
             }`} />
             <div className="text-[11px]">
-              <p className="font-medium text-white capitalize">Gateway {gatewayStatus}</p>
-              <p className="text-[9px] text-brand-muted">Railway Service</p>
+              <p className="font-medium text-white capitalize">
+                Gateway {
+                  gatewayStatus === 'connected' || gatewayStatus === 'online'
+                    ? 'Connected'
+                    : gatewayStatus === 'waiting_for_scan'
+                    ? 'Scan QR'
+                    : 'Offline'
+                }
+              </p>
+              <p className="text-[9px] text-brand-muted">Render Service</p>
             </div>
           </div>
           <button 
             onClick={() => {
-              setGatewayStatus('connecting')
-              setTimeout(() => setGatewayStatus(gatewayStatus === 'online' ? 'offline' : 'online'), 1000)
+              if (typeof setGatewayStatus === 'function') {
+                setGatewayStatus('refreshing')
+              }
             }}
-            disabled={gatewayStatus === 'connecting'}
+            disabled={gatewayStatus === 'refreshing' || gatewayStatus === 'connecting'}
             className="p-1.5 rounded-lg hover:bg-brand-border/40 text-brand-muted hover:text-white transition-colors"
-            title="Reconnect Gateway"
+            title="Refresh Status"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${gatewayStatus === 'connecting' ? 'animate-spin text-whatsapp-green' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${gatewayStatus === 'refreshing' || gatewayStatus === 'connecting' ? 'animate-spin text-whatsapp-green' : ''}`} />
           </button>
         </div>
       </div>

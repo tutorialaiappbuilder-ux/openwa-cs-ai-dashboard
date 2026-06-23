@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { Search, Send, User, Bot, ShieldAlert, Zap, Paperclip, Eye, Ban, CheckCheck, RefreshCw } from 'lucide-react'
+import { apiFetch } from '../utils/api'
 
 export default function InboxView({ conversations, setConversations, storeData, systemInstruction, botActive }) {
   const [activeChatId, setActiveChatId] = useState(conversations[0]?.id || '')
@@ -7,6 +8,10 @@ export default function InboxView({ conversations, setConversations, storeData, 
   const [isTyping, setIsTyping] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   
+  // Real active chat messages state
+  const [activeChatMessages, setActiveChatMessages] = useState([])
+  const [loadingMessages, setLoadingMessages] = useState(false)
+
   const messagesEndRef = useRef(null)
 
   const activeChat = conversations.find(c => c.id === activeChatId)
@@ -14,104 +19,102 @@ export default function InboxView({ conversations, setConversations, storeData, 
   // Scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [activeChat?.messages, isTyping])
+  }, [activeChatMessages, isTyping])
 
-  // Get matching mock AI response based on message & settings
-  const generateMockAIResponse = (userMsg) => {
-    const text = userMsg.toLowerCase()
-    const instruction = systemInstruction.toLowerCase()
-    
-    // Default prefix styling based on instruction tone
-    let greeting = "Halo Kak!"
-    if (instruction.includes("sopan")) greeting = "Selamat datang di toko kami! Ada yang bisa kami bantu?"
-    if (instruction.includes("friend") || instruction.includes("santai")) greeting = "Halo Kak! Ada yang bisa dibantu?"
+  // Sync activeChatId with the first conversation if activeChatId is not set
+  useEffect(() => {
+    if (!activeChatId && conversations.length > 0) {
+      setActiveChatId(conversations[0].id)
+    }
+  }, [conversations, activeChatId])
 
-    // Check promos
-    if (text.includes("promo") || text.includes("diskon") || text.includes("potongan")) {
-      const activePromos = storeData.promos.map(p => `*${p.code}* (${p.desc})`).join(' atau ')
-      return `${greeting} Saat ini kami sedang ada promo aktif nih. Kakak bisa gunakan kode promo ${activePromos}. Silakan dipakai ya Kak! 😊`
+  // Fetch and poll messages for selected conversation
+  useEffect(() => {
+    if (!activeChatId) {
+      setActiveChatMessages([])
+      return
     }
 
-    // Check menu
-    if (text.includes("menu") || text.includes("makanan") || text.includes("minuman") || text.includes("harga") || text.includes("makan")) {
-      const menuList = storeData.menu.map(m => `- *${m.name}*: Rp ${m.price.toLocaleString('id-ID')}`).join('\n')
-      return `${greeting} Berikut adalah daftar menu dan harga terupdate kami:\n\n${menuList}\n\nAda yang ingin dipesan sekarang?`
+    const fetchMessages = async () => {
+      setLoadingMessages(true)
+      try {
+        const data = await apiFetch(`/api/conversations/${activeChatId}/messages`)
+        setActiveChatMessages(data.map(m => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          media_url: m.mediaR2Key ? `/uploads/${m.mediaR2Key}` : null,
+          sent_at: m.sentAt
+        })))
+      } catch (err) {
+        console.error('Failed to fetch messages:', err)
+      } finally {
+        setLoadingMessages(false)
+      }
     }
 
-    // Check operating hours
-    if (text.includes("jam") || text.includes("buka") || text.includes("operasional") || text.includes("tutup")) {
-      return `${greeting} Untuk jam operasional toko kami:\n\n📅 *Senin - Jumat*: ${storeData.hours.weekday}\n📅 *Sabtu - Minggu*: ${storeData.hours.weekend}\n\nKami siap melayani Kakak pada jam tersebut ya!`
-    }
+    fetchMessages()
 
-    // General FAQ or greeting
-    return `${greeting} Terima kasih sudah menghubungi kami. Pesan Kakak sudah kami catat. Ada detail info menu, promo, atau jam operasional yang ingin ditanyakan?`
-  }
+    // Poll message thread every 3 seconds for low-latency chat updates
+    const interval = setInterval(async () => {
+      try {
+        const data = await apiFetch(`/api/conversations/${activeChatId}/messages`)
+        setActiveChatMessages(data.map(m => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          media_url: m.mediaR2Key ? `/uploads/${m.mediaR2Key}` : null,
+          sent_at: m.sentAt
+        })))
+      } catch (err) {
+        console.error('Failed to poll messages:', err)
+      }
+    }, 3000)
 
-  const handleSendMessage = (e) => {
+    return () => clearInterval(interval)
+  }, [activeChatId])
+
+  const handleSendMessage = async (e) => {
     e.preventDefault()
     if (!inputValue.trim() || !activeChat) return
 
-    const userMessage = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: inputValue,
-      sent_at: new Date().toISOString()
-    }
-
-    const updatedMessages = [...activeChat.messages, userMessage]
-    
-    // Update local conversations state
-    const newConversations = conversations.map(c => {
-      if (c.id === activeChatId) {
-        return {
-          ...c,
-          messages: updatedMessages,
-          last_message_at: new Date().toISOString()
-        }
-      }
-      return c
-    })
-    setConversations(newConversations)
+    const userMessageContent = inputValue
     setInputValue('')
 
-    // Trigger AI automatic response if bot is globally active AND takeover is false for this chat
-    if (botActive && !activeChat.takeover) {
-      setIsTyping(true)
-      
-      // Simulate WhatsApp "typing..." delay
-      setTimeout(() => {
-        setIsTyping(false)
-        const botReplyText = generateMockAIResponse(userMessage.content)
-        const botMessage = {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: botReplyText,
-          sent_at: new Date().toISOString()
-        }
+    try {
+      const response = await apiFetch(`/api/conversations/${activeChatId}/reply`, {
+        method: 'POST',
+        body: JSON.stringify({ content: userMessageContent })
+      })
 
-        const newConversationsWithBot = conversations.map(c => {
-          if (c.id === activeChatId) {
-            return {
-              ...c,
-              messages: [...updatedMessages, botMessage],
-              last_message_at: new Date().toISOString()
-            }
-          }
-          return c
-        })
-        setConversations(newConversationsWithBot)
-      }, 2000)
+      const newMsg = {
+        id: response.message.id,
+        role: response.message.role,
+        content: response.message.content,
+        sent_at: response.message.sentAt
+      }
+
+      setActiveChatMessages(prev => [...prev, newMsg])
+    } catch (err) {
+      console.error('Failed to send reply:', err)
+      alert('Gagal mengirim pesan: ' + err.message)
     }
   }
 
-  const toggleTakeover = (chatId) => {
-    const newConversations = conversations.map(c => {
-      if (c.id === chatId) {
-        return { ...c, takeover: !c.takeover }
-      }
-      return c
-    })
-    setConversations(newConversations)
+  const toggleTakeover = async (chatId) => {
+    try {
+      const response = await apiFetch(`/api/conversations/${chatId}/takeover`, { method: 'POST' })
+      const newConversations = conversations.map(c => {
+        if (c.id === chatId) {
+          return { ...c, takeover: response.takeover }
+        }
+        return c
+      })
+      setConversations(newConversations)
+    } catch (err) {
+      console.error('Failed to toggle takeover:', err)
+      alert('Gagal mengubah mode takeover: ' + err.message)
+    }
   }
 
   // Filter conversations based on search
@@ -243,63 +246,70 @@ export default function InboxView({ conversations, setConversations, storeData, 
 
             {/* Message Feed */}
             <div className="flex-1 overflow-y-auto p-6 space-y-4">
-              {activeChat.messages.map((msg) => {
-                const isUser = msg.role === 'user'
-                const isAI = msg.role === 'assistant'
-                const isManual = msg.role === 'admin'
-                return (
-                  <div
-                    key={msg.id}
-                    className={`flex ${isUser ? 'justify-start' : 'justify-end'}`}
-                  >
-                    <div className={`max-w-[70%] rounded-2xl p-3.5 relative shadow-md font-sans text-xs leading-relaxed ${
-                      isUser
-                        ? 'bg-brand-card text-brand-text border border-brand-border/40 rounded-tl-none'
-                        : isAI
-                        ? 'bg-gradient-to-tr from-ai-indigo/10 to-ai-violet/10 text-white border border-ai-indigo/30 rounded-tr-none'
-                        : 'bg-gradient-to-tr from-whatsapp-teal/20 to-whatsapp-green/10 text-white border border-whatsapp-teal/40 rounded-tr-none'
-                    }`}>
-                      {/* Badge / Avatar Label */}
-                      <div className="flex items-center gap-1.5 mb-1 text-[9px] opacity-75 font-semibold">
-                        {isUser && <span className="text-brand-muted">Pelanggan</span>}
-                        {isAI && (
-                          <span className="text-ai-indigo flex items-center gap-0.5">
-                            <Bot className="w-2.5 h-2.5" /> CS AI (Gemini 3.1)
-                          </span>
-                        )}
-                        {isManual && (
-                          <span className="text-whatsapp-green flex items-center gap-0.5">
-                            <User className="w-2.5 h-2.5" /> Admin (Manual)
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Message Content */}
-                      <p className="whitespace-pre-line text-brand-text">{msg.content}</p>
-
-                      {/* Display attachment if available */}
-                      {msg.media_url && (
-                        <div className="mt-2.5 rounded-lg overflow-hidden border border-brand-border/60 bg-brand-dark/50 p-1.5 relative group">
-                          <img src={msg.media_url} alt="attachment" className="max-h-48 object-cover rounded w-full" />
-                          <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                            <button className="p-1.5 bg-brand-card rounded-lg hover:text-whatsapp-green">
-                              <Eye className="w-4 h-4" />
-                            </button>
-                          </div>
+              {loadingMessages ? (
+                <div className="flex flex-col justify-center items-center h-full py-12 gap-2 text-brand-muted">
+                  <RefreshCw className="w-6 h-6 animate-spin text-whatsapp-teal" />
+                  <span className="text-[10px]">Memuat riwayat chat...</span>
+                </div>
+              ) : (
+                activeChatMessages.map((msg) => {
+                  const isUser = msg.role === 'user'
+                  const isAI = msg.role === 'assistant'
+                  const isManual = msg.role === 'admin'
+                  return (
+                    <div
+                      key={msg.id}
+                      className={`flex ${isUser ? 'justify-start' : 'justify-end'}`}
+                    >
+                      <div className={`max-w-[70%] rounded-2xl p-3.5 relative shadow-md font-sans text-xs leading-relaxed ${
+                        isUser
+                          ? 'bg-brand-card text-brand-text border border-brand-border/40 rounded-tl-none'
+                          : isAI
+                          ? 'bg-gradient-to-tr from-ai-indigo/10 to-ai-violet/10 text-white border border-ai-indigo/30 rounded-tr-none'
+                          : 'bg-gradient-to-tr from-whatsapp-teal/20 to-whatsapp-green/10 text-white border border-whatsapp-teal/40 rounded-tr-none'
+                      }`}>
+                        {/* Badge / Avatar Label */}
+                        <div className="flex items-center gap-1.5 mb-1 text-[9px] opacity-75 font-semibold">
+                          {isUser && <span className="text-brand-muted">Pelanggan</span>}
+                          {isAI && (
+                            <span className="text-ai-indigo flex items-center gap-0.5">
+                              <Bot className="w-2.5 h-2.5" /> CS AI (Gemini 3.1)
+                            </span>
+                          )}
+                          {isManual && (
+                            <span className="text-whatsapp-green flex items-center gap-0.5">
+                              <User className="w-2.5 h-2.5" /> Admin (Manual)
+                            </span>
+                          )}
                         </div>
-                      )}
 
-                      {/* Time and Status */}
-                      <div className="flex justify-end items-center gap-1 mt-1 opacity-60 text-[8px] text-right">
-                        <span>
-                          {new Date(msg.sent_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                        {!isUser && <CheckCheck className="w-3 h-3 text-whatsapp-green" />}
+                        {/* Message Content */}
+                        <p className="whitespace-pre-line text-brand-text">{msg.content}</p>
+
+                        {/* Display attachment if available */}
+                        {msg.media_url && (
+                          <div className="mt-2.5 rounded-lg overflow-hidden border border-brand-border/60 bg-brand-dark/50 p-1.5 relative group">
+                            <img src={msg.media_url} alt="attachment" className="max-h-48 object-cover rounded w-full" />
+                            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                              <button className="p-1.5 bg-brand-card rounded-lg hover:text-whatsapp-green">
+                                <Eye className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Time and Status */}
+                        <div className="flex justify-end items-center gap-1 mt-1 opacity-60 text-[8px] text-right">
+                          <span>
+                            {new Date(msg.sent_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                          {!isUser && <CheckCheck className="w-3 h-3 text-whatsapp-green" />}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                )
-              })}
+                  )
+                })
+              )}
 
               {/* Typing Simulator Bubble */}
               {isTyping && (

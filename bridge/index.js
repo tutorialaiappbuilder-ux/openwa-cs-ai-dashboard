@@ -111,15 +111,30 @@ async function startWhatsApp() {
   const client = await create({
     sessionId: 'openwa-bridge',
     multiDevice: true,
-    authTimeout: 60,
+    authTimeout: 120,
     blockCrashLogs: true,
     disableSpins: true,
     headless: true,
     logConsole: false,
     qrTimeout: 0,
-    // Gunakan Chrome yang sudah terinstall di Docker image (ghcr.io/puppeteer/puppeteer)
-    // JANGAN set chromiumArgs saat multiDevice: true — konflik dan menyebabkan timeout!
-    useChrome: true,
+    // Gunakan puppeteerOptions (BUKAN chromiumArgs) agar tidak konflik dengan multiDevice
+    // Flag wajib untuk Docker container dengan RAM terbatas (Render free: 512MB)
+    puppeteerOptions: {
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--no-zygote',
+        '--single-process',           // Penting! Render free tier RAM terbatas
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--mute-audio',
+        '--no-first-run',
+      ],
+    },
     // Callback saat QR code tersedia
     qrCallback: (qr) => {
       lastQrCode = qr

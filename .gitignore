@@ -12,6 +12,12 @@ dist
 dist-ssr
 *.local
 
+# Environment variables (SENSITIVE — jangan commit!)
+.env
+
+# Uploaded files (local fallback ketika R2 tidak dikonfigurasi)
+uploads/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

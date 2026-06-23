@@ -1,7 +1,7 @@
 {
   "name": "openwa-bridge",
   "version": "1.0.0",
-  "description": "OpenWA WhatsApp Bridge — Persistent service for Railway",
+  "description": "OpenWA WhatsApp Bridge — Persistent service for Render",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -11,6 +11,8 @@
     "@open-wa/wa-automate": "^4.73.0",
     "axios": "^1.7.2",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "qrcode": "^1.5.3",
+    "qrcode-terminal": "^0.12.0"
   }
 }

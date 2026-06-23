@@ -2,7 +2,7 @@
  * WhatsApp Bridge — Baileys Edition v2.0
  *
  * Menggunakan @whiskeysockets/baileys (WebSocket langsung ke WhatsApp)
- * TANPA Puppeteer/Chrome — jauh lebih ringan dan stabil di cloud.
+ * TANPA Puppeteer/Chrome — jauh lebih ringan dan stabil.
  *
  * Endpoints:
  *   GET  /status  — cek status koneksi
@@ -14,19 +14,6 @@ import 'dotenv/config'
 import express from 'express'
 import qrcode from 'qrcode'
 import axios from 'axios'
-import pino from 'pino'
-import { createRequire } from 'module'
-
-// Baileys menggunakan CommonJS, kita perlu import via createRequire
-const require = createRequire(import.meta.url)
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  makeInMemoryStore,
-  jidNormalizedUser,
-} = require('@whiskeysockets/baileys')
 
 // ============================================
 // Config
@@ -41,13 +28,10 @@ const SESSION_DIR = './session'
 // ============================================
 let sock = null
 let lastQrString = null
-let connectionStatus = 'disconnected' // disconnected | connecting | waiting_for_scan | connected | error
-
-// Logger minimal (tidak spam ke console)
-const logger = pino({ level: 'silent' })
+let connectionStatus = 'disconnected'
 
 // ============================================
-// Express App
+// Express App — start DULU sebelum WA
 // ============================================
 const app = express()
 app.use(express.json())
@@ -119,7 +103,6 @@ app.post('/send', async (req, res) => {
     return res.status(503).json({ error: 'WhatsApp belum terkoneksi.' })
   }
   try {
-    // Format nomor: pastikan berakhir dengan @s.whatsapp.net
     const jid = to.includes('@') ? to : `${to.replace(/[^0-9]/g, '')}@s.whatsapp.net`
     await sock.sendMessage(jid, { text: message })
     console.log(`📤 Pesan terkirim ke ${jid}`)
@@ -132,7 +115,7 @@ app.post('/send', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`\n🌉 Baileys Bridge HTTP listening on port ${PORT}`)
-  console.log(`🔗 Buka URL ini di browser untuk scan QR:\n   https://<your-render-url>/qr\n`)
+  console.log(`🔗 Buka http://localhost:${PORT}/qr di browser untuk scan QR\n`)
 })
 
 // ============================================
@@ -145,6 +128,15 @@ async function startWhatsApp() {
 
   connectionStatus = 'connecting'
 
+  // Import Baileys secara dynamic (kompatibel ESM & CJS)
+  const baileys = await import('@whiskeysockets/baileys')
+  const makeWASocket = baileys.default
+  const {
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+  } = baileys
+
   // Load atau buat session baru
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR)
 
@@ -152,17 +144,26 @@ async function startWhatsApp() {
   const { version } = await fetchLatestBaileysVersion()
   console.log(`📦 Baileys version: ${version.join('.')}`)
 
+  // Buat koneksi WA
   sock = makeWASocket({
     version,
-    logger,
     auth: state,
-    printQRInTerminal: true, // Juga print ke log terminal sebagai fallback
+    printQRInTerminal: true,
     browser: ['Baileys Bridge', 'Chrome', '125.0'],
     connectTimeoutMs: 60000,
     keepAliveIntervalMs: 15000,
     defaultQueryTimeoutMs: 60000,
     retryRequestDelayMs: 1000,
     maxRetries: 5,
+    logger: {
+      level: 'silent',
+      trace: () => {},
+      debug: () => {},
+      info: () => {},
+      warn: (msg) => console.log('⚠️', msg),
+      error: (msg) => console.error('❌', msg),
+      child: () => ({ level: 'silent', trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => {} }),
+    },
   })
 
   // Simpan credentials setiap kali ada update
@@ -172,27 +173,26 @@ async function startWhatsApp() {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update
 
-    // QR code tersedia → tampilkan
     if (qr) {
       lastQrString = qr
       connectionStatus = 'waiting_for_scan'
-      console.log('\n📲 QR Code siap! Buka URL /qr di browser untuk scan.')
+      console.log('\n📲 QR Code siap! Buka http://localhost:' + PORT + '/qr di browser.')
     }
 
     if (connection === 'close') {
-      const shouldReconnect =
-        lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut
+      const statusCode = lastDisconnect?.error?.output?.statusCode
+      const shouldReconnect = statusCode !== DisconnectReason.loggedOut
 
-      console.log(`🔌 Koneksi terputus. Reconnect: ${shouldReconnect}`)
+      console.log(`🔌 Koneksi terputus (${statusCode}). Reconnect: ${shouldReconnect}`)
       connectionStatus = 'disconnected'
       lastQrString = null
       sock = null
 
       if (shouldReconnect) {
-        console.log('♻️ Mencoba reconnect dalam 5 detik...')
+        console.log('♻️ Reconnect dalam 5 detik...')
         setTimeout(() => startWhatsApp(), 5000)
       } else {
-        console.log('🚪 Logged out dari WhatsApp. Hapus folder session untuk login ulang.')
+        console.log('🚪 Logged out. Hapus folder ./session untuk login ulang.')
         connectionStatus = 'logged_out'
       }
     }
@@ -210,19 +210,12 @@ async function startWhatsApp() {
     if (type !== 'notify') return
 
     for (const msg of messages) {
-      // Skip pesan dari diri sendiri dan grup
       if (msg.key.fromMe) continue
       if (msg.key.remoteJid?.endsWith('@g.us')) continue
       if (!msg.message) continue
 
       const from = msg.key.remoteJid
-      const senderName =
-        msg.pushName ||
-        msg.key.participant?.split('@')[0] ||
-        from?.split('@')[0] ||
-        'Unknown'
-
-      // Ekstrak teks pesan
+      const senderName = msg.pushName || from?.split('@')[0] || 'Unknown'
       const msgContent = msg.message
       const text =
         msgContent.conversation ||
@@ -236,26 +229,15 @@ async function startWhatsApp() {
       console.log(`📩 Dari ${senderName} (${from}): "${text.substring(0, 60)}"`)
 
       try {
-        // Kirim ke backend untuk diproses AI
-        const payload = {
-          from,
-          message: text,
-          senderName,
-          businessId: BUSINESS_ID,
-        }
-
+        const payload = { from, message: text, senderName, businessId: BUSINESS_ID }
         const response = await axios.post(`${BACKEND_URL}/api/webhook/message`, payload, {
           timeout: 30000,
         })
 
-        // Jika ada auto-reply dari AI, kirim balik
         if (response.data.autoReply && response.data.reply) {
           const replyText = response.data.reply
-
-          // Simulasi typing delay agar terasa natural
           const typingDelay = Math.min(replyText.length * 25, 3000)
           await new Promise((r) => setTimeout(r, typingDelay))
-
           await sock.sendMessage(from, { text: replyText })
           console.log(`🤖 AI reply terkirim ke ${from}`)
         }
@@ -272,6 +254,5 @@ async function startWhatsApp() {
 startWhatsApp().catch((err) => {
   console.error('💥 Bridge gagal start:', err.message)
   connectionStatus = 'error'
-  // Retry setelah 15 detik
   setTimeout(() => startWhatsApp(), 15000)
 })
